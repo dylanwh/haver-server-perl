@@ -35,15 +35,17 @@ $bd_ = undef;
 ok($lobby->contains( $house->get_user('bd_') ), "bd_ is in lobby");
 
 
-
 $house->delete_user('bd_');
-
-ok(!$lobby->contains( $house->get_user('bd_') ), "bd_ is not in lobby");
+dies_ok {
+    $house->get_user('bd_');
+} 'bd_ does not exist';
 
 $house->delete_user('dylan');
 
 ok(!$dylan->is_attached, "dylan is not attached to the house");
-ok(!$lobby->contains( $house->get_user('dylan') ), "dylan is not in lobby");
+dies_ok {
+    $house->get_user('dylan');
+};
 ok(!$lobby->contains( $dylan ), "dylan is not in lobby");
 ok(!$dylan->contains($lobby), "dylan is consistent");
 

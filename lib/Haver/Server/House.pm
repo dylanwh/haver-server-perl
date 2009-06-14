@@ -66,6 +66,18 @@ class Haver::Server::House {
         $user->remove($room);
     }
 
+    around get_user(Str $name) {
+        my $val = $self->$orig($name);
+        return $val if defined $val;
+        die "unknown user: $name"; # FIXME: use exception object
+    }
+
+    around get_room(Str $name) {
+        my $val = $self->$orig($name);
+        return $val if defined $val;
+        die "unknown room: $name"; # FIXME: use exception object.
+    }
+
     before delete_user(Str $name) {
         if ($self->has_user($name)) {
             my $user = $self->get_user($name);
