@@ -12,7 +12,6 @@ class Haver::Server::House {
     foreach my $n (qw( user room )) {
         has "_${n}s" => (
             metaclass => 'Collection::Hash',
-            is        => 'ro',
             isa       => "HashRef[Haver::Server::\u$n]",
             init_arg  => undef,
             default   => sub { tie my %h, 'Tie::CPHash'; \%h },
