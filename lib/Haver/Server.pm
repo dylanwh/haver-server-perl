@@ -5,6 +5,7 @@ use feature ':5.10';
 
 use Haver::Protocol  ();
 use Haver::Server::Handle;
+use Haver::Server::List;
 use Haver::Server::Fail;
 use Haver::Server::Bork;
 
@@ -14,6 +15,7 @@ use Tie::CPHash  ();
 use Set::Object  ();
 use Scalar::Util ();
 
+class Haver::Server::Drop extends Haver::Server::Error;
 
 class Haver::Server with MooseX::Runnable with MooseX::Getopt {
     use TryCatch;
@@ -29,10 +31,12 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         traits  => ['NoGetopt'],
         is      => 'rw',
         isa     => 'Haver::Server::Handle',
+        weak_ref => 1,
         handles => {
             reply        => 'send',
             param        => 'param',
             current_name => 'name',
+            current_phase => 'phase',
         },
     );
 
@@ -49,7 +53,7 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         }
     );
 
-    has 'usermap' => (
+    has 'user_map' => (
         traits    => [ 'NoGetopt' ],
         is        => 'ro',
         isa       => 'HashRef[Haver::Server::Handle]',
@@ -63,11 +67,11 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         },
     );
 
-    has 'roommap' => (
+    has 'room_map' => (
         traits   => ['NoGetopt'],
         is       => 'ro',
-        isa      => 'HashRef[Set::Object]',
-        default  => sub { tie my %cphash, 'Tie::CPHash'; $cphash{main} = Set::Object::Weak->new;  \%cphash },
+        isa      => 'HashRef[Haver::Server::List]',
+        default  => sub { tie my %cphash, 'Tie::CPHash'; \%cphash },
         metaclass => 'Collection::Hash',
         provides => {
             set    => 'set_room',
@@ -100,6 +104,7 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
 
     around get_room(Str $name) {
         return $self->$orig($name) if $self->has_room($name);
+        linger => 1,
         Haver::Server::Fail->throw( room_not_found => $name );
     }
 
@@ -124,36 +129,53 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         say "New connection from $host:$port";
 
         my $handle = Haver::Server::Handle->new(
-            fh => $fh,
+            fh       => $fh,
+            linger   => 1,
+            timeout  => 120,
             on_error => sub {
-                my ($handle, $fatal, $message) = @_;
-                warn  $fatal ? "FATAL: " : "WARN: ", "$message";
-                $self->cleanup($handle);
+                my ( $handle, $fatal, $message ) = @_;
+                warn $fatal ? "FATAL: " : "WARN: ", "$message";
+                try { $self->quit( $handle, "error: $message" ) }
+                catch { warn "error on_error: $@" }
             },
-            on_eof     => sub { say "Got EOF"; $self->cleanup($_[0]) },
-            on_message => sub { $self->on_message(@_) },
+            on_eof => sub {
+                my ( $handle ) = @_;
+                say "Got EOF";
+                try   { $self->quit( $handle, 'eof' ) }
+                catch { warn "error from on_eof: $@" }
+            },
+            on_message => sub { 
+                try   { $self->on_message(@_) }
+                catch { warn "error from on_message: $@" }
+            },
+            on_timeout => sub {
+                try { $self->on_timeout(@_) }
+                catch { warn "error from on_timeout: $@" }
+            },
         );
 
         $self->insert_handle($handle);
     }
+
 
     method on_message($handle, $name, @args) {
         my $method_name = "cmd_$name";
         $method_name =~ s/\W/_/g;
         say "Got command: $name";
 
-
         $self->current_handle($handle);
         $self->current_command($name);
 
         my $e;
         try {
+            $self->validate_command();
+
             if ($self->can($method_name)) {
                 my $method = $self->meta->get_method($method_name);
                 my @params = eval { $method->_parsed_signature->positional_params() };
                 my $required = grep { $_->required } @params;
 
-                if ($required == @args) {
+                if (@args >= $required) {
                     $self->$method_name(@args);
                 }
                 else {
@@ -173,31 +195,89 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         }
         catch (Haver::Server::Bork $e) {
             $self->reply(BORK => $self->current_command, $e->message);
+            $self->quit($handle, 'bork');
         }
-        catch (Item $e) {
+        catch (Haver::Server::Drop $e) {
+            warn "Dropping connection without notifcation";
+            $self->cleanup($handle);
+        }
+        catch ($e) {
             $self->reply(BUG => $self->current_command, $e);
             warn "ERROR: $e";
         }
     }
 
-    method cleanup($handle) {
-        $self->remove_handle($handle);
-        try { $self->del_user($handle->name) }
-        $handle->destroy;
+    method on_timeout($handle) {
+        if ($handle->has_last_timeout) {
+            $self->quit($handle, 'timeout');
+        }
+        else {
+            my $now = time;
+            $handle->last_timeout($now);
+            $handle->send(POKE => $now);
+        }
     }
+
+    method cleanup($handle) {
+        foreach my $list ($handle->lists) {
+            $list->remove($handle);
+        }
+        $self->remove_handle($handle);
+        $self->del_user($handle->name) if $self->has_user($handle->name);
+    }
+
+    method quit($handle, $reason) {
+        my $targets = Set::Object->new;
+        
+        foreach my $list ($handle->lists) {
+            $list->remove($handle);
+            foreach my $target ($list->members) {
+                $targets->insert($target);
+            }
+        }
+        
+        foreach my $target ($targets->members) {
+            $target->send(QUIT => $handle->name, $reason);
+        }
+        $self->cleanup($handle);
+    }
+
+
+    method validate_command() {
+        my $phase = $self->current_phase;
+        my $name  = $self->current_command;
+
+        if ($phase eq 'new') {
+            Haver::Server::Drop->throw if $name ne 'HAVER';
+        }
+        elsif ($phase eq 'ident') {
+            Haver::Server::Bork->throw("Expected IDENT, got $name") if $name ne 'IDENT';
+        }
+        elsif ($phase eq 'interactive') {
+            if ( $name eq 'IDENT' or $name eq 'HAVER' ) {
+                Haver::Server::Bork->throw('Now is not the time for that.');
+            }
+        }
+        else {
+            die "Invalid phase";
+        }
+    }
+
 
     method cmd_HAVER($useragent, $extensions? = "") {
         $self->param(
             useragent  => $useragent,
             extensions => [split(/,/, $extensions)],
         );
-        $self->reply(HAVER => $self->hostname, "Haver::Server $VERSION");
+        $self->reply(HAVER => $self->hostname, "Haver::Server/$VERSION");
+        $self->current_phase('ident');
     }
 
     method cmd_IDENT($name) {
         $self->set_user($name => $self->current_handle);
         $self->current_name($name);
         $self->reply(HELLO => $name);
+        $self->current_phase('interactive');
     }
 
     method cmd_TO($name, $type, @msg) {
@@ -247,6 +327,25 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         $room->remove($sender);
     }
 
+    method cmd_OPEN($name) {
+        my $room = Haver::Server::List->new(
+            name => $name
+        );
+        $self->set_room($name => $room);
+        $self->reply(OPEN => $name);
+    }
+
+    method cmd_CLOSE($name) {
+        my $room = $self->get_room($name);
+        my $sender = $self->current_handle;
+
+        foreach my $target ($room->members) {
+            $target->send(PART => $name, $target->name, 'closed', $self->current_name);
+        }
+        $sender->send(CLOSE => $name);
+        $self->del_room($name);
+    }
+
     method cmd_LIST($name) {
         my $room   = $self->get_room($name);
         my $sender = $self->current_handle;
@@ -263,5 +362,30 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
 
     method cmd_ROOMLIST() {
         $self->reply(ROOMLIST => $self->rooms);
+    }
+
+    method cmd_BYE($reason? = '') {
+        $self->quit($self->current_handle, "bye: $reason");
+        $self->reply(BYE => "bye: $reason");
+    }
+
+    method cmd_POKE($word) {
+        $self->reply(OUCH => $word);
+    }
+
+    method cmd_OUCH($time) {
+        my $handle = $self->current_handle;
+        if (not $handle->has_last_timeout) {
+            Haver::Server::Bork->throw(
+                "OUCH without POKE"
+            );
+        }
+
+        if ($handle->last_timeout eq $time) {
+            $handle->reset_last_timeout();
+        }
+        else {
+            $self->quit($handle, 'stale timeout');
+        }
     }
 }
