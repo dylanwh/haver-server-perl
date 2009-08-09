@@ -28,6 +28,20 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
     has 'interface' => (is => 'ro', isa => 'Maybe[Str]', default  => undef);
     has 'port'      => (is => 'ro', isa => 'Int',        required => 1    );
 
+    has 'version' => (
+        traits  => ['NoGetopt'],
+        is      => 'ro',
+        isa     => 'Str',
+        default => "Haver::Server/$VERSION",
+    );
+
+    has 'extensions' => (
+        traits  => ['NoGetopt'],
+        is      => 'ro',
+        isa     => 'Str',
+        default => 'auth',
+    );
+
     has 'current_handle' => (
         traits  => ['NoGetopt'],
         is      => 'rw',
@@ -164,7 +178,6 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         }
         catch (Haver::Server::Bork $e) {
             $self->reply(BORK => $self->current_command, $e->message);
-            $self->quit($handle, 'bork');
         }
         catch (Haver::Server::Drop $e) {
             warn "Dropping connection without notifcation";
@@ -264,12 +277,15 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
     }
 
     # Protocol handlers.
-    method cmd_HAVER($useragent, $extensions? = "") {
-        $self->param(
-            useragent  => $useragent,
-            extensions => [split(/,/, $extensions)],
+    method cmd_HAVER($version, $extensions? = "") {
+        $self->param( version => $version );
+        $self->reply(
+            HAVER => (
+                $self->hostname, 
+                $self->version, 
+                $self->extensions,
+            )
         );
-        $self->reply(HAVER => $self->hostname, "Haver::Server/$VERSION");
         $self->current_phase('ident');
     }
 
