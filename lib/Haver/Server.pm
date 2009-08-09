@@ -6,6 +6,7 @@ use feature ':5.10';
 use Haver::Protocol  ();
 use Haver::Server::Handle;
 use Haver::Server::List;
+
 use Haver::Server::Fail;
 use Haver::Server::Bork;
 
@@ -82,38 +83,6 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         },
     );
 
-    around set_user(Str $name, Haver::Server::Handle $handle) {
-        return $self->$orig($name, $handle) unless $self->has_user($name);
-        Haver::Server::Fail->throw( user_exists => $name );
-    }
-
-    around get_user(Str $name) {
-        return $self->$orig($name) if $self->has_user($name);
-        Haver::Server::Fail->throw( user_not_found => $name );
-    }
-
-    around del_user(Str $name) {
-        return $self->$orig($name) if $self->has_user($name);
-        Haver::Server::Fail->throw( user_not_found => $name );
-    }
-
-    around set_room(Str $name, $set) {
-        return $self->$orig($name, $set) unless $self->has_room($name);
-        Haver::Server::Fail->throw( room_exists => $name );
-    }
-
-    around get_room(Str $name) {
-        return $self->$orig($name) if $self->has_room($name);
-        linger => 1,
-        Haver::Server::Fail->throw( room_not_found => $name );
-    }
-
-    around del_room(Str $name) {
-        return $self->$orig($name) if $self->has_room($name);
-        Haver::Server::Fail->throw( room_not_found => $name );
-    }
-
-
     method run() {
 	    my $guard = AnyEvent::Socket::tcp_server($self->interface, $self->port, sub { $self->on_connect(@_) });
 
@@ -125,6 +94,7 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
 	    return 0;
     }
 
+    # Callbacks
     method on_connect($fh, $host, $port) {
         say "New connection from $host:$port";
 
@@ -156,7 +126,6 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
 
         $self->insert_handle($handle);
     }
-
 
     method on_message($handle, $name, @args) {
         my $method_name = "cmd_$name";
@@ -218,6 +187,7 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         }
     }
 
+    # Utility methods
     method cleanup($handle) {
         foreach my $list ($handle->lists) {
             $list->remove($handle);
@@ -242,7 +212,6 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         $self->cleanup($handle);
     }
 
-
     method validate_command() {
         my $phase = $self->current_phase;
         my $name  = $self->current_command;
@@ -263,7 +232,38 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         }
     }
 
+    around set_user(Str $name, Haver::Server::Handle $handle) {
+        return $self->$orig($name, $handle) unless $self->has_user($name);
+        Haver::Server::Fail->throw( user_exists => $name );
+    }
 
+    around get_user(Str $name) {
+        return $self->$orig($name) if $self->has_user($name);
+        Haver::Server::Fail->throw( user_not_found => $name );
+    }
+
+    around del_user(Str $name) {
+        return $self->$orig($name) if $self->has_user($name);
+        Haver::Server::Fail->throw( user_not_found => $name );
+    }
+
+    around set_room(Str $name, $set) {
+        return $self->$orig($name, $set) unless $self->has_room($name);
+        Haver::Server::Fail->throw( room_exists => $name );
+    }
+
+    around get_room(Str $name) {
+        return $self->$orig($name) if $self->has_room($name);
+        linger => 1,
+        Haver::Server::Fail->throw( room_not_found => $name );
+    }
+
+    around del_room(Str $name) {
+        return $self->$orig($name) if $self->has_room($name);
+        Haver::Server::Fail->throw( room_not_found => $name );
+    }
+
+    # Protocol handlers.
     method cmd_HAVER($useragent, $extensions? = "") {
         $self->param(
             useragent  => $useragent,
