@@ -67,60 +67,46 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         traits   => ['NoGetopt'],
         is       => 'ro',
         isa      => 'HashRef[Set::Object]',
-        default  => sub { tie my %cphash, 'Tie::CPHash'; $cphash{main} = Set::Object->new;  \%cphash },
+        default  => sub { tie my %cphash, 'Tie::CPHash'; $cphash{main} = Set::Object::Weak->new;  \%cphash },
         metaclass => 'Collection::Hash',
         provides => {
             set    => 'set_room',
             get    => 'get_room',
             exists => 'has_room',
             delete => 'del_room',
+            keys   => 'rooms',
         },
     );
 
     around set_user(Str $name, Haver::Server::Handle $handle) {
-        if (not $self->has_user($name)) {
-            $self->$orig($name, $handle);
-        }
-        else {
-            Haver::Server::Fail->throw(
-                user_exists => $name
-            );
-        }
+        return $self->$orig($name, $handle) unless $self->has_user($name);
+        Haver::Server::Fail->throw( user_exists => $name );
     }
 
     around get_user(Str $name) {
-        if ($self->has_user($name)) {
-            return $self->$orig($name);
-        }
-        else {
-            Haver::Server::Fail->throw(
-                user_not_found => $name
-            );
-        }
+        return $self->$orig($name) if $self->has_user($name);
+        Haver::Server::Fail->throw( user_not_found => $name );
+    }
+
+    around del_user(Str $name) {
+        return $self->$orig($name) if $self->has_user($name);
+        Haver::Server::Fail->throw( user_not_found => $name );
     }
 
     around set_room(Str $name, $set) {
-        if (not $self->has_room($name)) {
-            $self->$orig($name, $set);
-        }
-        else {
-            Haver::Server::Fail->throw(
-                room_exists => $name
-            );
-        }
+        return $self->$orig($name, $set) unless $self->has_room($name);
+        Haver::Server::Fail->throw( room_exists => $name );
     }
 
     around get_room(Str $name) {
-        if ($self->has_room($name)) {
-            return $self->$orig($name);
-        }
-        else {
-            Haver::Server::Fail->throw(
-                room_not_found => $name
-            );
-        }
+        return $self->$orig($name) if $self->has_room($name);
+        Haver::Server::Fail->throw( room_not_found => $name );
     }
 
+    around del_room(Str $name) {
+        return $self->$orig($name) if $self->has_room($name);
+        Haver::Server::Fail->throw( room_not_found => $name );
+    }
 
 
     method run() {
@@ -196,6 +182,7 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
 
     method cleanup($handle) {
         $self->remove_handle($handle);
+        try { $self->del_user($handle->name) }
         $handle->destroy;
     }
 
@@ -224,7 +211,7 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         my $sender = $self->current_handle;
 
         if (not $room->contains($sender)) {
-            Haver::Server::Fail->throw(not_in_room => $name);
+            Haver::Server::Fail->throw(access_denied => $name);
         }
 
         foreach my $target ($room->members) {
@@ -251,7 +238,7 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         my $sender = $self->current_handle;
 
         if (not $room->contains($sender)) {
-            Haver::Server::Fail->throw('already_parted' => $name);
+            Haver::Server::Fail->throw(already_parted => $name);
         }
 
         foreach my $target ($room->members) {
@@ -260,4 +247,21 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         $room->remove($sender);
     }
 
+    method cmd_LIST($name) {
+        my $room   = $self->get_room($name);
+        my $sender = $self->current_handle;
+
+        if (not $room->contains($sender)) {
+            Haver::Server::Fail->throw(
+                access_denied => $name
+            );
+        }
+
+        my @users = map { $_->name } $room->members;
+        $self->reply(LIST => $name, @users);
+    }
+
+    method cmd_ROOMLIST() {
+        $self->reply(ROOMLIST => $self->rooms);
+    }
 }
