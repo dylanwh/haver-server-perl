@@ -13,26 +13,32 @@ class Haver::Server::List with MooseX::Param {
         required => 1,
     );
 
-    has '_users' => (
+    has '_handles' => (
         is       => 'ro',
         isa      => 'Set::Object',
         init_arg => undef,
         default  => sub { Set::Object->new },
-        handles => [ qw( members )],
+        handles  => [qw[ members ]],
     );
 
     method insert(Haver::Server::Handle $handle) {
         $handle->subscribe($self);
-        $self->_users->insert($handle);
+        $self->_handles->insert($handle);
     }
 
     method remove(Haver::Server::Handle $handle) {
         $handle->unsubscribe($self);
-        $self->_users->remove($handle);
+        $self->_handles->remove($handle);
     }
 
     method contains(Haver::Server::Handle $handle) {
-        $self->_users->contains($handle);
+        $self->_handles->contains($handle);
+    }
+
+    method send(@msg) {
+        for my $handle ($self->members) {
+            $handle->send(@msg);
+        }
     }
 
 }

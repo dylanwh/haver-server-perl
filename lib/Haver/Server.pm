@@ -35,23 +35,22 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         default => "Haver::Server/$VERSION",
     );
 
-    has 'extensions' => (
+    has 'features' => (
         traits  => ['NoGetopt'],
         is      => 'ro',
         isa     => 'Str',
-        default => 'auth',
+        default => 'auth,nick',
     );
 
     has 'current_handle' => (
-        traits  => ['NoGetopt'],
-        is      => 'rw',
-        isa     => 'Haver::Server::Handle',
+        traits   => ['NoGetopt'],
+        is       => 'rw',
+        isa      => 'Haver::Server::Handle',
         weak_ref => 1,
-        handles => {
-            reply        => 'send',
-            param        => 'param',
-            current_name => 'name',
-            current_phase => 'phase',
+        handles  => {
+            reply         => 'send',
+            param         => 'param',
+            current_name  => 'name',
         },
     );
 
@@ -210,15 +209,9 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
     }
 
     method quit($handle, $reason) {
-        my $targets = Set::Object->new;
+        my $targets = $handle->observers;
         
-        foreach my $list ($handle->lists) {
-            $list->remove($handle);
-            foreach my $target ($list->members) {
-                $targets->insert($target);
-            }
-        }
-        
+        $targets->remove($handle);
         foreach my $target ($targets->members) {
             $target->send(QUIT => $handle->name, $reason);
         }
@@ -226,7 +219,7 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
     }
 
     method validate_command() {
-        my $phase = $self->current_phase;
+        my $phase = $self->current_handle->phase;
         my $name  = $self->current_command;
 
         if ($phase eq 'new') {
@@ -243,6 +236,16 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         else {
             die "Invalid phase";
         }
+    }
+
+    method get_info(MooseX::Param $thing) {
+        my @info;
+        for my $key (sort $thing->param) {
+            my $val = $thing->param($key);
+            next if ref $val;
+            push @info, "$key=$val";
+        }
+        return @info;
     }
 
     around set_user(Str $name, Haver::Server::Handle $handle) {
@@ -277,23 +280,26 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
     }
 
     # Protocol handlers.
-    method cmd_HAVER($version, $extensions? = "") {
-        $self->param( version => $version );
-        $self->reply(
+    method cmd_HAVER($version, $features? = "") {
+        my $handle = $self->current_handle;
+        $handle->param( version => $version );
+        $handle->send(
             HAVER => (
                 $self->hostname, 
                 $self->version, 
-                $self->extensions,
+                $self->features,
             )
         );
-        $self->current_phase('ident');
+        $handle->phase('ident');
+        $handle->parse_features($features);
     }
 
     method cmd_IDENT($name) {
-        $self->set_user($name => $self->current_handle);
-        $self->current_name($name);
-        $self->reply(HELLO => $name);
-        $self->current_phase('interactive');
+        my $handle = $self->current_handle;
+        $self->set_user($name => $handle);
+        $handle->name($name);
+        $handle->send(HELLO => $name);
+        $handle->phase('interactive');
     }
 
     method cmd_TO($name, $type, @msg) {
@@ -347,6 +353,8 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         my $room = Haver::Server::List->new(
             name => $name
         );
+        $room->param(owner => $self->current_name);
+
         $self->set_room($name => $room);
         $self->reply(OPEN => $name);
     }
@@ -356,7 +364,7 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
         my $sender = $self->current_handle;
 
         foreach my $target ($room->members) {
-            $target->send(PART => $name, $target->name, 'closed', $self->current_name);
+            $target->send(PART => $name, $target->name, 'closed', $sender->name);
         }
         $sender->send(CLOSE => $name);
         $self->del_room($name);
@@ -404,4 +412,23 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
             $self->quit($handle, 'stale timeout');
         }
     }
+
+    method cmd_NICK($nick) {
+        my $handle = $self->current_handle;
+        $handle->param(nick => $nick);
+        $handle->broadcast(
+            NICK => $handle->name, $nick
+        );
+    }
+
+    method cmd_USERINFO($name) {
+        my $user = $self->get_user($name);
+        $self->reply(USERINFO => $name, $self->get_info($user));
+    }
+
+    method cmd_ROOMINFO($name) {
+        my $room = $self->get_room($name);
+        $self->reply(ROOMINFO => $name, $self->get_info($room));
+    }
+
 }
