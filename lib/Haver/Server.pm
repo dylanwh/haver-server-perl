@@ -154,7 +154,7 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
 
             if ($self->can($method_name)) {
                 my $method = $self->meta->get_method($method_name);
-                my @params = eval { $method->_parsed_signature->positional_params() };
+                my @params = eval { $method->parsed_signature->positional_params() };
                 my $required = grep { $_->required } @params;
 
                 if (@args >= $required) {
