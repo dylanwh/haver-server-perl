@@ -18,7 +18,7 @@ use Scalar::Util ();
 
 class Haver::Server::Drop extends Haver::Server::Error;
 
-class Haver::Server with MooseX::Runnable with MooseX::Getopt {
+class Haver::Server with MooseX::Runnable with MooseX::Getopt with Haver::Server::Role::HasEnv {
     use TryCatch;
 
     our $VERSION = '0.01';
@@ -56,55 +56,15 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
 
     has 'current_command' => ( traits => ['NoGetopt'], is => 'rw', isa => 'Str' );
 
-    has 'handles' => (
-        traits  => ['NoGetopt'],
-        is      => 'ro',
-        isa     => 'Set::Object',
-        default => sub { Set::Object->new },
-        handles => {
-            'insert_handle' => 'insert',
-            'remove_handle' => 'remove',
-        }
-    );
-
-    has 'user_map' => (
-        traits    => [ 'NoGetopt' ],
-        is        => 'ro',
-        isa       => 'HashRef[Haver::Server::Handle]',
-        default   => sub { tie my %cphash, 'Tie::CPHash'; \%cphash },
-        metaclass => 'Collection::Hash',
-        provides  => {
-            set    => 'set_user',
-            get    => 'get_user',
-            exists => 'has_user',
-            delete => 'del_user',
-        },
-    );
-
-    has 'room_map' => (
-        traits   => ['NoGetopt'],
-        is       => 'ro',
-        isa      => 'HashRef[Haver::Server::List]',
-        default  => sub { tie my %cphash, 'Tie::CPHash'; \%cphash },
-        metaclass => 'Collection::Hash',
-        provides => {
-            set    => 'set_room',
-            get    => 'get_room',
-            exists => 'has_room',
-            delete => 'del_room',
-            keys   => 'rooms',
-        },
-    );
-
     method run() {
-	    my $guard = AnyEvent::Socket::tcp_server($self->interface, $self->port, sub { $self->on_connect(@_) });
+        my $guard = AnyEvent::Socket::tcp_server($self->interface, $self->port, sub { $self->on_connect(@_) });
 
         my $iface = $self->interface || '*';
         my $port  = $self->port;
         say "Listening on $iface:$port";
-	    AnyEvent->condvar->wait;
+        AnyEvent->condvar->wait;
 
-	    return 0;
+        return 0;
     }
 
     # Callbacks
@@ -246,37 +206,6 @@ class Haver::Server with MooseX::Runnable with MooseX::Getopt {
             push @info, "$key=$val";
         }
         return @info;
-    }
-
-    around set_user(Str $name, Haver::Server::Handle $handle) {
-        return $self->$orig($name, $handle) unless $self->has_user($name);
-        Haver::Server::Fail->throw( user_exists => $name );
-    }
-
-    around get_user(Str $name) {
-        return $self->$orig($name) if $self->has_user($name);
-        Haver::Server::Fail->throw( user_not_found => $name );
-    }
-
-    around del_user(Str $name) {
-        return $self->$orig($name) if $self->has_user($name);
-        Haver::Server::Fail->throw( user_not_found => $name );
-    }
-
-    around set_room(Str $name, $set) {
-        return $self->$orig($name, $set) unless $self->has_room($name);
-        Haver::Server::Fail->throw( room_exists => $name );
-    }
-
-    around get_room(Str $name) {
-        return $self->$orig($name) if $self->has_room($name);
-        linger => 1,
-        Haver::Server::Fail->throw( room_not_found => $name );
-    }
-
-    around del_room(Str $name) {
-        return $self->$orig($name) if $self->has_room($name);
-        Haver::Server::Fail->throw( room_not_found => $name );
     }
 
     # Protocol handlers.
